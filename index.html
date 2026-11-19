@@ -178,6 +178,8 @@
         
         #editModeBanner { background: #ffc107; color: #333; padding: 10px; text-align: center; font-weight: bold; margin-bottom: 15px; display: none; border-radius: 4px; }
         .editable-input { width: 100%; padding: 4px; border: 1px solid #89c2ff; border-radius: 3px; font-family: inherit; }
+        #orderItemsTable th, #orderItemsTable td { padding: 6px 4px; vertical-align: middle; }
+        #orderItemsTable .form-control { padding: 6px 6px; font-size: 12.5px; }
     </style>
 </head>
 <body>
@@ -254,7 +256,7 @@
                     <h5 style="margin:0 0 10px 0; color:var(--primary-color);">2. Chọn Hàng (Gõ tìm kiếm)</h5>
                     <div style="margin:-2px 0 10px 0; padding:8px 10px; border:1px dashed #9bc1ff; background:#f4f9ff; color:#1d4f91; border-radius:6px; font-size:12px;">ℹ️ Cho phép <b>xuất trước - nhập kho sau</b>. Nếu hàng chưa tồn hoặc chưa đủ số lượng, hệ thống vẫn lưu đơn và tự cảnh báo âm kho để bộ phận kho theo dõi.</div>
                     <datalist id="productListSales"></datalist>
-                    <table id="orderItemsTable" style="margin-top:0;"><thead><tr><th style="width: 45%">Tên Hàng (kèm giá vốn)</th><th style="width: 15%">SL</th><th style="width: 25%">Đơn giá</th><th style="width: 15%"></th></tr></thead><tbody id="orderItemsBody"></tbody></table>
+                    <table id="orderItemsTable" style="margin-top:0;"><thead><tr><th style="width: 34%">Tên Hàng (kèm giá vốn)</th><th style="width: 11%">SL</th><th style="width: 21%">Đơn giá</th><th style="width: 7%"></th><th style="width: 27%" title="Phân loại Nhà cung cấp nội bộ - không in lên PXK">NCC <small style="font-weight:normal;color:#6c757d;">(Nội bộ)</small></th></tr></thead><tbody id="orderItemsBody"></tbody></table>
                     <button class="btn btn-secondary btn-sm" style="width:100%; margin-top:5px;" onclick="createOrderItemRow()">➕ Thêm dòng</button>
                 </div>
                 <div class="card">
@@ -1641,7 +1643,7 @@ const reconcileStockFromOrders = (stockInput=null, ordersInput=null) => {
     nameMap.forEach((name,key) => {
         if(!stock.some(s => normalizeStr(s.name) === key)) {
             const sample = orders.flatMap(o => o.items || []).find(i => normalizeStr(i.name) === key);
-            stock.push({name, quantityIn:0, quantityOut:0, costPrice:Number(sample?.costPrice||0), supplier:'CHƯA GÁN NCC', note:'Tự tạo từ đơn bán', history:[]});
+            stock.push({name, quantityIn:0, quantityOut:0, costPrice:Number(sample?.costPrice||0), supplier:(sample?.supplier || 'CHƯA GÁN NCC'), note:'Tự tạo từ đơn bán', history:[]});
         }
     });
     stock.forEach(s => { s.quantityOut = soldMap.get(normalizeStr(s.name)) || 0; });
@@ -1750,6 +1752,7 @@ const runDataIntegrityCheck = (repair=false, options={}) => {
     const ignoredSupplierLabels = new Set(['chưa chọn ncc','chưa rõ','chưa gán ncc','điều chỉnh kho','trị giá cũ','dữ liệu cũ']);
     const addSupplierRef = (name) => { const n=String(name||'').trim(); if(n && !ignoredSupplierLabels.has(normalizeStr(n))) referencedSuppliers.add(n); };
     stock.forEach(s => { addSupplierRef(s.supplier); (s.history||[]).forEach(h=>addSupplierRef(h.supplier)); });
+    orders.forEach(o => (o.items||[]).forEach(i => addSupplierRef(i.supplier)));
     unbilled.forEach(x=>addSupplierRef(x.supplier));
     debts.forEach(x=>addSupplierRef(x.supplier));
     logs.forEach(x=>addSupplierRef(x.supplier));
@@ -2024,6 +2027,7 @@ const generateID = () => {
                 updateProductDatalist('productListSales'); 
                 updateCustomerDatalists(); // Nạp danh sách gợi ý khách hàng
                 if(!editingOrderId && document.querySelectorAll('#orderItemsBody tr').length === 0) createOrderItemRow(); 
+                refreshOrderItemSupplierSelects();
                 updateInvoicePreview(); 
             }
             if(tabId === 'tab-cashflow') { populateCashflowSelects(); renderCashflow(); updateOrderDatalist(); }
@@ -2593,10 +2597,15 @@ const submitOrder = () => {
     const warnings=[], items=[];
     let totalRev=0, totalCost=0;
 
-    const ensureStockRecord=(productName,draftCost=0)=>{
+    const ensureStockRecord=(productName,draftCost=0,selectedSupplier='')=>{
         let p=stockData.find(s=>normalizeStr(s.name)===normalizeStr(productName));
-        if(!p){p={name:productName,quantityIn:0,quantityOut:0,costPrice:Number(draftCost||0),supplier:'CHƯA GÁN NCC',history:[],note:'Tự tạo khi bán hàng trước nhập kho'};stockData.push(p);}
-        else if(Number(p.costPrice||0)===0 && Number(draftCost||0)>0) p.costPrice=Number(draftCost||0);
+        if(!p){
+            p={name:productName,quantityIn:0,quantityOut:0,costPrice:Number(draftCost||0),supplier:selectedSupplier||'CHƯA GÁN NCC',history:[],note:'Tự tạo khi bán hàng trước nhập kho'};
+            stockData.push(p);
+        } else {
+            if(Number(p.costPrice||0)===0 && Number(draftCost||0)>0) p.costPrice=Number(draftCost||0);
+            if(selectedSupplier) p.supplier=selectedSupplier;
+        }
         return p;
     };
 
@@ -2604,18 +2613,19 @@ const submitOrder = () => {
         const inputName=row.querySelector('.item-name').value.trim();
         const qty=Number(row.querySelector('.item-qty').value);
         const price=parseInput(row.querySelector('.item-price').value);
+        const selectedSupplier=(row.querySelector('.item-supplier')?.value || '').trim();
         if(!inputName){notifyUser('Thiếu tên hàng!', 'warn');return;}
         if(!(qty>0)){notifyUser('Số lượng phải lớn hơn 0!', 'warn');return;}
         if(price<0 || !Number.isFinite(price)){notifyUser('Đơn giá không hợp lệ!', 'warn');return;}
         const rawName=inputName.split(' {V:')[0].trim();
         const matchedCostText=inputName.includes('{V:')?Number((inputName.split('{V:')[1]||'').replace('}','').trim()):0;
-        const prod=ensureStockRecord(rawName,matchedCostText);
+        const prod=ensureStockRecord(rawName,matchedCostText,selectedSupplier);
         const originalName=row.dataset.originalName || '';
         const originalCost=Number(row.dataset.originalCost || 0);
         const preserveOldCost=Boolean(editingOrderId && normalizeStr(originalName)===normalizeStr(rawName));
         const costPrice=preserveOldCost ? originalCost : Number(prod.costPrice||matchedCostText||0);
         const itemId=row.dataset.itemId || makeId('OI');
-        items.push({id:itemId,name:rawName,fullName:inputName,quantity:qty,price,costPrice});
+        items.push({id:itemId,name:rawName,fullName:inputName,quantity:qty,price,costPrice,supplier:selectedSupplier});
         totalRev += qty*price; totalCost += qty*costPrice;
     }
     if(!items.length){notifyUser('Chưa có sản phẩm!', 'warn');return;}
@@ -2743,12 +2753,51 @@ const updateProductDatalist = (el) => { const stock = loadData(KEYS.STOCK); docu
     };
 
 
-const createOrderItemRow = (p='', q=1, pr=0, originalCost='', itemId='', originalName='') => {
+const buildOrderSupplierOptions = (selectedValue = '') => {
+    const sups = loadData(KEYS.SUPPLIERS);
+    const val = String(selectedValue || '').trim();
+    const hasSelected = val && sups.some(s => s.name === val);
+    let html = '<option value="">-- NCC --</option>';
+    if (val && !hasSelected) {
+        html += `<option value="${val.replace(/"/g, '&quot;')}">${val}</option>`;
+    }
+    html += sups.map(s => {
+        const safe = String(s.name || '').replace(/"/g, '&quot;');
+        return `<option value="${safe}">${s.name}</option>`;
+    }).join('');
+    return html;
+};
+
+const refreshOrderItemSupplierSelects = () => {
+    document.querySelectorAll('#orderItemsBody .item-supplier').forEach(sel => {
+        const currentVal = sel.value;
+        sel.innerHTML = buildOrderSupplierOptions(currentVal);
+        sel.value = currentVal;
+    });
+};
+
+const onOrderItemNameChange = (inputEl) => {
+    const row = inputEl.closest('tr');
+    const sel = row?.querySelector('.item-supplier');
+    const rawName = String(inputEl.value || '').split(' {V:')[0].trim();
+    if (sel && !sel.value && rawName) {
+        const match = loadData(KEYS.STOCK).find(s => normalizeStr(s.name) === normalizeStr(rawName));
+        if (match && match.supplier && normalizeStr(match.supplier) !== 'chưa gán ncc' && normalizeStr(match.supplier) !== 'chưa chọn ncc') {
+            sel.innerHTML = buildOrderSupplierOptions(match.supplier);
+            sel.value = match.supplier;
+        }
+    }
+    updateInvoicePreview();
+};
+
+const createOrderItemRow = (p='', q=1, pr=0, originalCost='', itemId='', originalName='', supplier='') => {
     const tbody=document.getElementById('orderItemsBody'); const row=tbody.insertRow();
     row.dataset.originalCost = originalCost === '' ? '' : String(Number(originalCost||0));
     row.dataset.originalName = originalName || (p ? p.split(' {V:')[0].trim() : '');
     row.dataset.itemId = itemId || '';
-    row.innerHTML=`<td><input type="text" class="form-control item-name" list="productListSales" value="${p}" placeholder="Gõ tên..." onchange="updateInvoicePreview()"></td><td><input type="number" min="0.001" step="any" class="form-control item-qty" value="${q}" oninput="updateInvoicePreview()"></td><td><input type="text" class="form-control item-price" value="${pr > 0 ? new Intl.NumberFormat('vi-VN').format(pr) : ''}" placeholder="0" oninput="formatInput(this); updateInvoicePreview()"></td><td><button class="btn btn-danger btn-sm" onclick="this.closest('tr').remove(); updateInvoicePreview()">x</button></td>`;
+    row.innerHTML=`<td><input type="text" class="form-control item-name" list="productListSales" value="${p}" placeholder="Gõ tên..." onchange="onOrderItemNameChange(this)"></td><td><input type="number" min="0.001" step="any" class="form-control item-qty" value="${q}" oninput="updateInvoicePreview()"></td><td><input type="text" class="form-control item-price" value="${pr > 0 ? new Intl.NumberFormat('vi-VN').format(pr) : ''}" placeholder="0" oninput="formatInput(this); updateInvoicePreview()"></td><td class="text-center"><button class="btn btn-danger btn-sm" onclick="this.closest('tr').remove(); updateInvoicePreview()">x</button></td><td><select class="form-control item-supplier" title="Chọn NCC nội bộ (không in lên PXK)">${buildOrderSupplierOptions(supplier)}</select></td>`;
+    const supSel = row.querySelector('.item-supplier');
+    if (supSel && supplier) supSel.value = supplier;
 };
 const startEditOrder = (id) => {
     const o=loadData(KEYS.ORDERS).find(x=>x.id===id); if(!o)return; switchTab('tab-sales'); editingOrderId=id;
@@ -2757,7 +2806,7 @@ const startEditOrder = (id) => {
     document.getElementById('custPhone').value=o.customer?.phone||''; document.getElementById('custName').value=o.customer?.name||''; document.getElementById('custAddress').value=o.customer?.address||'';
     document.getElementById('shippingCost').value=new Intl.NumberFormat('vi-VN').format(Number(o.shipping||0)); document.getElementById('orderNote').value=o.note||''; document.getElementById('internalNote').value=o.internalNote||'';
     document.getElementById('internalExpense').value=new Intl.NumberFormat('vi-VN').format(Number(o.internalExpense||0)); document.getElementById('saleStaffSelect').value=o.staff||'';
-    document.getElementById('orderItemsBody').innerHTML=''; (o.items||[]).forEach(i=>createOrderItemRow(i.fullName||i.name,i.quantity,i.price,i.costPrice,i.id||'',i.name));
+    document.getElementById('orderItemsBody').innerHTML=''; (o.items||[]).forEach(i=>createOrderItemRow(i.fullName||i.name,i.quantity,i.price,i.costPrice,i.id||'',i.name,i.supplier||''));
     if(o.date) document.getElementById('orderDate').value=new Date(o.date).toISOString().slice(0,10); updateInvoicePreview();
 };
 const cancelEditOrder = () => {
@@ -2995,7 +3044,7 @@ const handleAddStaff = (e) => {
 const deleteSupplierByName = (name) => {
     const key=normalizeStr(name);
     const used = loadData(KEYS.STOCK).some(s=>normalizeStr(s.supplier||'')===key || (s.history||[]).some(h=>normalizeStr(h.supplier||'')===key)) ||
-        loadData(KEYS.UNBILLED_IMPORTS).some(x=>normalizeStr(x.supplier||'')===key) || loadData(KEYS.SUPPLIER_DEBTS).some(x=>normalizeStr(x.supplier||'')===key) || loadData(KEYS.IMPORT_LOGS).some(x=>normalizeStr(x.supplier||'')===key);
+        loadData(KEYS.UNBILLED_IMPORTS).some(x=>normalizeStr(x.supplier||'')===key) || loadData(KEYS.SUPPLIER_DEBTS).some(x=>normalizeStr(x.supplier||'')===key) || loadData(KEYS.IMPORT_LOGS).some(x=>normalizeStr(x.supplier||'')===key) || loadData(KEYS.ORDERS).some(o=>(o.items||[]).some(i=>normalizeStr(i.supplier||'')===key));
     if(used){notifyUser('Không thể xóa NCC đã phát sinh nhập hàng/công nợ vì sẽ làm đứt liên kết lịch sử. Bạn có thể đổi tên hoặc cập nhật thông tin NCC.', 'warn');return;}
     if(!confirmAction(`Chắc chắn xóa NCC chưa phát sinh chứng từ: ${name}?`))return;
     recordDeletedId(KEYS.SUPPLIERS, key);
@@ -3127,6 +3176,7 @@ const saveSupplierInfo = (oldName) => {
         let debts=loadData(KEYS.SUPPLIER_DEBTS);debts.forEach(d=>{if(d.supplier===oldName)d.supplier=newName;});saveData(KEYS.SUPPLIER_DEBTS,debts);
         let logs=loadData(KEYS.IMPORT_LOGS);logs.forEach(l=>{if(l.supplier===oldName)l.supplier=newName;});saveData(KEYS.IMPORT_LOGS,logs);
         let cash=loadData(KEYS.CASHFLOW);cash.forEach(c=>{if(c.supplierName===oldName)c.supplierName=newName;});saveData(KEYS.CASHFLOW,cash);
+        let orders=loadData(KEYS.ORDERS);let ordChanged=false;orders.forEach(o=>(o.items||[]).forEach(i=>{if(i.supplier===oldName){i.supplier=newName;o.updatedAt=new Date().toISOString();ordChanged=true;}}));if(ordChanged)saveData(KEYS.ORDERS,orders);
     }
     saveData(KEYS.SUPPLIERS,sups);audit('CẬP NHẬT NCC',`${oldName} → ${newName}`);populateSupplierSelect();populateDebtSupplierSelect();notifyUser('Cập nhật thông tin Nhà Cung Cấp thành công!', 'ok');renderSupplierSidebar();viewSupplierDetail(newName);
 };
@@ -3162,6 +3212,7 @@ const handleAddSupplier = (e) => {
                 if (cur) el.value = cur;
             }
         }); 
+        refreshOrderItemSupplierSelects();
     };
     
     const updateSupplierCode = (logId, newCode) => {
